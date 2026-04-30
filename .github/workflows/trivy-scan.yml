@@ -1,4 +1,4 @@
-name: DevSecOps - Trivy Security Scan
+name: DevSecOps - Trivy + OWASP ZAP Security Scan
 
 on:
   push:
@@ -7,10 +7,13 @@ on:
     branches: [ main ]
 
 jobs:
+
+  # ────────────────────────────────────────────────────────────
+  # JOB 1 — Trivy (your original job, unchanged)
+  # ────────────────────────────────────────────────────────────
   trivy-scan:
     name: Scan Docker Image for Vulnerabilities
     runs-on: ubuntu-latest
-
     permissions:
       security-events: write
       actions: read
@@ -42,3 +45,75 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+
+
+  # ────────────────────────────────────────────────────────────
+  # JOB 2 — OWASP ZAP (new, runs in parallel with Trivy)
+  # Starts Juice Shop, attacks it live, then tears it down.
+  # ────────────────────────────────────────────────────────────
+  zap-scan:
+    name: OWASP ZAP — Dynamic App Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Start the same target image Trivy scans, so both jobs
+      # always test the exact same version of Juice Shop
+      - name: Start Juice Shop (target application)
+        run: |
+          docker pull bkimminich/juice-shop
+          docker run -d \
+            --name juice-shop \
+            -p 3000:3000 \
+            bkimminich/juice-shop
+          echo "Waiting for Juice Shop to initialise..."
+          sleep 20
+
+      # Confirm the app is reachable before ZAP starts attacking
+      - name: Health-check target
+        run: |
+          curl --retry 5 --retry-delay 5 --fail http://localhost:3000 \
+            && echo "Target is reachable" \
+            || (echo "Target not reachable — aborting" && exit 1)
+
+      # ZAP Baseline scan:
+      #   - Passive spider + light active probing
+      #   - Detects: missing security headers, XSS, info disclosure,
+      #     CSRF, open redirects, exposed admin paths
+      #   - fail_action: true → mirrors Trivy's exit-code: '1' behaviour
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3000'
+          cmd_options: '-a'          # -a enables the AJAX spider
+          fail_action: true
+          allow_issue_writing: false
+
+      # HTML + JSON reports downloadable from the Actions run page
+      - name: Upload ZAP report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-security-report
+          path: |
+            report_html.html
+            report_json.json
+          retention-days: 14
+
+      # Upload ZAP findings to the same Security tab as Trivy
+      # using the same action version you already use above
+      - name: Upload ZAP report to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'report_sarif.sarif'
+
+      - name: Stop Juice Shop container
+        if: always()
+        run: docker stop juice-shop && docker rm juice-shop
