@@ -94,6 +94,7 @@ jobs:
           cmd_options: '-a'          # -a enables the AJAX spider
           fail_action: true
           allow_issue_writing: false
+          sarif_output: 'zap-results.sarif'   # ← tells ZAP where to write the SARIF file
 
       # HTML + JSON reports downloadable from the Actions run page
       - name: Upload ZAP report artifact
@@ -107,12 +108,11 @@ jobs:
           retention-days: 14
 
       # Upload ZAP findings to the same Security tab as Trivy
-      # using the same action version you already use above
       - name: Upload ZAP report to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
-          sarif_file: 'report_sarif.sarif'
+          sarif_file: 'zap-results.sarif'     # ← matches sarif_output above
 
       - name: Stop Juice Shop container
         if: always()
